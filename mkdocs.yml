@@ -1,0 +1,14 @@
+site_name: FTL-HowTos
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - content.code.copy
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Homelab:
+      - Overview: homelab/overview.md
