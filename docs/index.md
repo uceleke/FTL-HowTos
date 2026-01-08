@@ -5,3 +5,4 @@ Welcome. This is my public knowledge base of runbooks, how-tos, and troubleshoot
 ## Sections
 - [Homelab](homelab/overview.md)
 - [Windows](Windows/index.md)
+- [splunk](splunk/index.md)
