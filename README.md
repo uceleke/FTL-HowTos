@@ -1,2 +1,2 @@
-# How2-Guides
-guides
+# FTL-HowTos
+Guides
