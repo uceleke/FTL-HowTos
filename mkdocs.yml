@@ -1,4 +1,5 @@
-site_name: FTL-HowTos
+site_name: FTL How-Tos
+
 theme:
   name: material
   palette:
@@ -14,17 +15,16 @@ theme:
     - navigation.instant
     - navigation.tabs
     - content.code.copy
-plugins:
-  - search
-  name: material
-  features:
-    - navigation.instant
-    - navigation.tabs
-    - content.code.copy
+
 plugins:
   - search
 
 nav:
   - Home: index.md
+  - Windows:
+      - Overview: windows/index.md
+      - Active Directory: windows/active-directory/index.md
+      - Domain Controllers: windows/domain-controllers/index.md
+      - Exchange: windows/exchange/index.md
   - Homelab:
       - Overview: homelab/overview.md
