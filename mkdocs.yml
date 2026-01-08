@@ -1,6 +1,22 @@
 site_name: FTL-HowTos
 theme:
   name: material
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - content.code.copy
+plugins:
+  - search
+  name: material
   features:
     - navigation.instant
     - navigation.tabs
