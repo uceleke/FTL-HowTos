@@ -22,9 +22,9 @@ plugins:
 nav:
   - Home: index.md
   - Windows:
-      - Overview: windows/index.md
-      - Active Directory: windows/active-directory/index.md
-      - Domain Controllers: windows/domain-controllers/index.md
-      - Exchange: windows/exchange/index.md
+      - Overview: Windows/index.md
+      - Active Directory: Windows/Active-Directory/index.md
+      - Domain Controllers: Windows/Domain-Controllers/index.md
+      - Exchange: Windows/Exchange/index.md
   - Homelab:
       - Overview: homelab/overview.md
