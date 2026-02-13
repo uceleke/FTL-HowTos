@@ -1,905 +1,706 @@
-# Chocolatey Server on LXD (Windows VM) - Air-Gapped Deployment Guide
+# Chocolatey for Business (C4B) - Air-Gapped Deployment Guide with SMB Repository Storage
 
 ## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        LXD Host (Ubuntu)                                 │
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────┐     │
-│  │              Windows Server VM (LXD)                            │     │
-│  │                                                                 │     │
-│  │  ┌─────────────────────┐    ┌────────────────────────────┐    │     │
-│  │  │  Chocolatey.Server  │    │  Z:\ (Mapped NAS Share)    │    │     │
-│  │  │  (IIS + NuGet)      │───▶│  └── ChocolateyPackages    │    │     │
-│  │  │  Port: 80/443       │    │      ├── packages/         │    │     │
-│  │  └─────────────────────┘    │      └── logs/             │    │     │
-│  │                             └────────────────────────────────┘    │     │
-│  └────────────────────────────────────────────────────────────────┘     │
-│                                    │                                     │
-│  /mnt/nas/chocolatey ◄─────────────┘ (passed through to VM)             │
-│         │                                                                │
-└─────────│────────────────────────────────────────────────────────────────┘
-          │ NFS/SMB Mount
-          ▼
+│                   Windows Server (CHOCOSERVER)                          │
+│                                                                         │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
+│  │  Nexus Repository │  │  Chocolatey CCM  │  │  Chocolatey Agent    │  │
+│  │  (Port 8443)      │  │  (Port 8443/CCM) │  │  (Licensed)          │  │
+│  │                   │  │                   │  │                      │  │
+│  │  Blob Store ──────│──│───────────────────│──│──► Z:\ (SMB Share)   │  │
+│  └──────────────────┘  └──────────────────┘  └──────────────────────┘  │
+│                                                                         │
+│  Service Accounts: svc.LDAP, svc.ChocoServ                             │
+│  Certificate: Web Server Auth (FQDN in Subject)                        │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    │ SMB (TCP 445)
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          Buffalo NAS                                     │
-│  ┌────────────────────────────────────────────────────────────────┐     │
-│  │  Share: /chocolatey-repo                                        │     │
-│  │    ├── packages/         (.nupkg files)                         │     │
-│  │    ├── logs/             (IIS & Chocolatey logs)                │     │
-│  │    └── backup/           (configuration backups)                │     │
-│  └────────────────────────────────────────────────────────────────┘     │
+│                          Buffalo NAS                                    │
+│  ┌────────────────────────────────────────────────────────────────┐    │
+│  │  SMB Share: \\<NAS-IP>\ChocoShare                              │    │
+│  │    ├── nexus-repo/          (Nexus blob store - .nupkg files)  │    │
+│  │    ├── staging/             (offline install files)             │    │
+│  │    └── backup/              (configuration backups)             │    │
+│  └────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▲
+                                    │ SMB / Ansible
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      Client Machines (Endpoints)                        │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │ Choco    │  │ Choco    │  │ Choco    │  │ Choco    │              │
+│  │ Agent    │  │ Agent    │  │ Agent    │  │ Agent    │              │
+│  │ Licensed │  │ Licensed │  │ Licensed │  │ Licensed │              │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘              │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Pre-Deployment: Items to Stage (Air-Gap Preparation)
+## Table of Contents
 
-Download these on an internet-connected machine and transfer to your air-gapped network:
+1. [Needed Files and Equipment](#1-needed-files-and-equipment)
+2. [Buffalo NAS Configuration](#2-buffalo-nas-configuration)
+3. [Preparation Before Install](#3-preparation-before-install)
+4. [Install Chocolatey (C4B)](#4-install-chocolatey-c4b)
+5. [Configure Nexus to Use SMB Share](#5-configure-nexus-to-use-smb-share)
+6. [Nexus Setup](#6-nexus-setup)
+7. [Chocolatey Central Management (CCM) Setup](#7-chocolatey-central-management-ccm-setup)
+8. [Import Packages to Repository](#8-import-packages-to-repository)
+9. [Client Setup](#9-client-setup)
+10. [Auditing Chocolatey](#10-auditing-chocolatey)
+11. [Maintenance](#11-maintenance)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Quick Reference](#13-quick-reference)
 
-### Required Downloads
+---
+
+## 1. Needed Files and Equipment
+
+**Note:** File locations without a drive letter refer to the media that contains the install files (USB, DVD, or transfer share).
+
+### Required Downloads (Stage on Internet-Connected Machine)
 
 | Item | Source | Notes |
 |------|--------|-------|
 | Windows Server 2022 ISO | Microsoft VLSC / Eval Center | Standard or Datacenter |
-| VirtIO Drivers ISO | `https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso` | Required for LXD/KVM |
-| Chocolatey Offline Install | `https://community.chocolatey.org/install.ps1` | Save as install.ps1 |
-| Chocolatey nupkg | `https://community.chocolatey.org/api/v2/package/chocolatey` | Rename to chocolatey.nupkg |
-| Chocolatey.Server nupkg | `https://community.chocolatey.org/api/v2/package/chocolatey.server` | Core server package |
-| .NET Framework 4.8 Offline | Microsoft Download Center | If not in Windows image |
-| Any packages you need | community.chocolatey.org | Download .nupkg files |
+| Choco-Setup Files | Chocolatey Licensed Portal | C4B quick-start environment bundle |
+| JJJ.Chocolatey.Licensed | Internal package | Import to `C:\choco-setup\files\files` |
+| Latest Choco Repos | `\\xxx.xxx.2.62\ChocoShare` (or staging media) | All current .nupkg files |
+| .NET Framework 4.8 Offline | Microsoft Download Center | If not included in Windows image |
 
-### Transfer Method
+### Required Infrastructure
+
+| Item | Purpose |
+|------|---------|
+| Buffalo NAS | SMB share for Nexus blob store (package repository storage) |
+| Active Directory | Service accounts and LDAP authentication |
+| HashiCorp Vault | Secrets management (`/ui/vault/secrets/systemcreds/Chocolatey`) |
+| Web Server Certificate | Server Authentication cert with exportable key (FQDN in Subject) |
+| Chocolatey GPOs | Firewall GPOs, User Rights GPOs |
+
+### Transfer Method (Air-Gapped)
+
 ```bash
-# Example: Create transfer archive
+# On internet-connected machine: create transfer bundle
 mkdir -p /transfer/chocolatey-staging
 # Copy all downloaded files to this directory
-tar -czvf chocolatey-airgap-bundle.tar.gz /transfer/chocolatey-staging
-
 # Transfer via approved method (USB, DVD, secure file transfer, etc.)
 ```
 
 ---
 
-## Part 1: Buffalo NAS Configuration
+## 2. Buffalo NAS Configuration
 
-### 1.1 Create Share via NAS Web Interface
+### 2.1 Create SMB Share via NAS Web Interface
 
 1. Access Buffalo NAS admin: `http://<NAS-IP>/`
-2. Navigate to: **Shares** → **Folder Setup** → **Create Folder**
-3. Create share: `chocolatey-repo`
+2. Navigate to: **Shares** > **Folder Setup** > **Create Folder**
+3. Create share: `ChocoShare`
 
-### 1.2 Configure SMB Share (Recommended for Windows VM)
+### 2.2 Configure SMB Share Permissions
 
-1. **Shares** → **chocolatey-repo** → **SMB Settings**
+1. **Shares** > **ChocoShare** > **SMB Settings**
 2. Enable SMB sharing
-3. Create service account:
-   - Username: `chocosvc`
-   - Password: `<strong-password>`
-   - Permissions: Read/Write
+3. Create or assign a service account:
+   - Username: `chocosvc` (or use AD account `svc.ChocoServ`)
+   - Password: `<strong-password>` (store in Vault)
+   - Permissions: **Read/Write**
 
-### 1.3 Configure NFS Export (Alternative - for LXD Host Mount)
+### 2.3 Create Directory Structure on Share
 
-1. **Network** → **NFS** → **Enable NFS**
-2. Add export rule:
-   - Path: `/chocolatey-repo`
-   - Allowed Host: `<LXD-Host-IP>`
-   - Access: Read/Write
-   - Root Squash: No
+From any Windows machine that can reach the NAS:
 
-### 1.4 Note Your NAS Details
+```powershell
+# Map temporary drive to configure
+net use T: \\<NAS-IP>\ChocoShare /user:chocosvc <PASSWORD>
+
+# Create directory structure
+New-Item -ItemType Directory -Path "T:\nexus-repo" -Force
+New-Item -ItemType Directory -Path "T:\staging" -Force
+New-Item -ItemType Directory -Path "T:\backup" -Force
+
+# Verify
+dir T:\
+
+# Disconnect temporary drive
+net use T: /delete
+```
+
+### 2.4 Record NAS Details
 
 ```
 NAS IP Address:      ___________________
-Share Name:          chocolatey-repo
-SMB Username:        chocosvc
-SMB Password:        ___________________
+Share Name:          ChocoShare
+SMB Path:            \\<NAS-IP>\ChocoShare
+Service Account:     chocosvc (or svc.ChocoServ)
+Password:            (stored in Vault at /ui/vault/secrets/systemcreds/Chocolatey)
 ```
 
 ---
 
-## Part 2: LXD Host Preparation (Ubuntu)
+## 3. Preparation Before Install
 
-### 2.1 Install LXD (If Not Already Installed)
+Complete all of these steps before running the C4B installer.
 
-```bash
-# Install LXD via snap
-sudo snap install lxd
+### 3.1 Windows Server Base Setup
 
-# Initialize LXD (use defaults or customize)
-sudo lxd init
-```
-
-**Interactive prompts - recommended answers:**
-```
-Would you like to use LXD clustering? no
-Do you want to configure a new storage pool? yes
-Name of the new storage pool: default
-Name of the storage backend to use: dir (or zfs if available)
-Would you like to connect to a MAAS server? no
-Would you like to create a new local network bridge? yes
-What should the new bridge be called? lxdbr0
-What IPv4 address should be used? auto
-What IPv6 address should be used? none
-Would you like LXD to be available over the network? no
-Would you like stale cached images to be updated automatically? no (air-gapped)
-Would you like a YAML "lxd init" preseed to be printed? no
-```
-
-### 2.2 Verify LXD Installation
-
-```bash
-# Check LXD status
-lxc version
-
-# List networks
-lxc network list
-
-# List storage pools
-lxc storage list
-```
-
-### 2.3 Install NFS Client Utilities
-
-```bash
-sudo apt update
-sudo apt install -y nfs-common cifs-utils
-```
-
-### 2.4 Create NAS Mount Point
-
-```bash
-# Create mount directory
-sudo mkdir -p /mnt/nas/chocolatey-repo
-
-# Set permissions
-sudo chmod 755 /mnt/nas/chocolatey-repo
-```
-
-### 2.5 Mount Buffalo NAS (Choose One Method)
-
-#### Option A: NFS Mount
-```bash
-# Test mount (temporary)
-sudo mount -t nfs <NAS-IP>:/chocolatey-repo /mnt/nas/chocolatey-repo -o rw,sync,hard,intr
-
-# Verify mount
-df -h /mnt/nas/chocolatey-repo
-ls -la /mnt/nas/chocolatey-repo
-
-# Make permanent - add to /etc/fstab
-echo "<NAS-IP>:/chocolatey-repo /mnt/nas/chocolatey-repo nfs rw,sync,hard,intr,_netdev 0 0" | sudo tee -a /etc/fstab
-```
-
-#### Option B: SMB/CIFS Mount
-```bash
-# Create credentials file
-sudo tee /etc/nas-creds-choco << 'EOF'
-username=chocosvc
-password=<YOUR-PASSWORD>
-domain=WORKGROUP
-EOF
-
-sudo chmod 600 /etc/nas-creds-choco
-
-# Test mount (temporary)
-sudo mount -t cifs //<NAS-IP>/chocolatey-repo /mnt/nas/chocolatey-repo \
-    -o credentials=/etc/nas-creds-choco,uid=0,gid=0,file_mode=0777,dir_mode=0777
-
-# Verify mount
-df -h /mnt/nas/chocolatey-repo
-
-# Make permanent - add to /etc/fstab
-echo "//<NAS-IP>/chocolatey-repo /mnt/nas/chocolatey-repo cifs credentials=/etc/nas-creds-choco,uid=0,gid=0,file_mode=0777,dir_mode=0777,_netdev 0 0" | sudo tee -a /etc/fstab
-```
-
-### 2.6 Create Directory Structure on NAS
-
-```bash
-sudo mkdir -p /mnt/nas/chocolatey-repo/{packages,logs,backup,staging}
-sudo chmod -R 777 /mnt/nas/chocolatey-repo
-```
-
-### 2.7 Verify Mount Persists After Reboot
-
-```bash
-# Remount from fstab
-sudo mount -a
-
-# Verify
-mount | grep chocolatey
-```
-
----
-
-## Part 3: Stage Installation Files
-
-### 3.1 Copy Staged Files to NAS
-
-```bash
-# Assuming your transfer bundle is at /tmp/chocolatey-airgap-bundle.tar.gz
-cd /tmp
-tar -xzvf chocolatey-airgap-bundle.tar.gz
-
-# Copy to NAS staging area
-cp -r /tmp/transfer/chocolatey-staging/* /mnt/nas/chocolatey-repo/staging/
-
-# Verify files
-ls -la /mnt/nas/chocolatey-repo/staging/
-```
-
-Expected contents:
-```
-/mnt/nas/chocolatey-repo/staging/
-├── windows-server-2022.iso
-├── virtio-win.iso
-├── install.ps1                 (Chocolatey installer)
-├── chocolatey.nupkg
-├── chocolatey.server.nupkg
-├── dotnet-framework-48.exe     (if needed)
-└── packages/                   (any additional .nupkg files)
-```
-
----
-
-## Part 4: Create Windows Server VM in LXD
-
-### 4.1 Create VM Instance
-
-```bash
-# Create empty Windows VM
-lxc init win2022-choco --empty --vm
-
-# Configure VM resources
-lxc config set win2022-choco limits.cpu 4
-lxc config set win2022-choco limits.memory 8GB
-
-# Set secure boot off (required for Windows in LXD)
-lxc config set win2022-choco security.secureboot false
-
-# Enable TPM (Windows 11/Server 2022 may require)
-lxc config set win2022-choco security.csm false
-```
-
-### 4.2 Add Storage Devices
-
-```bash
-# Expand root disk (Windows needs at least 40GB)
-lxc config device override win2022-choco root size=80GB
-
-# Attach Windows ISO for installation
-lxc config device add win2022-choco iso disk \
-    source=/mnt/nas/chocolatey-repo/staging/windows-server-2022.iso \
-    boot.priority=10
-
-# Attach VirtIO drivers ISO
-lxc config device add win2022-choco virtio disk \
-    source=/mnt/nas/chocolatey-repo/staging/virtio-win.iso
-```
-
-### 4.3 Configure Network
-
-```bash
-# Verify network device (should be auto-added)
-lxc config show win2022-choco | grep -A5 "eth0"
-
-# If needed, manually add network
-lxc config device add win2022-choco eth0 nic \
-    nictype=bridged \
-    parent=lxdbr0
-```
-
-### 4.4 Add NAS Share as Disk Device
-
-```bash
-# Pass through NAS mount to VM
-lxc config device add win2022-choco nas-share disk \
-    source=/mnt/nas/chocolatey-repo \
-    path=/nas-share
-```
-
-### 4.5 Start VM and Access Console
-
-```bash
-# Start the VM
-lxc start win2022-choco
-
-# Access console for Windows installation
-lxc console win2022-choco --type=vga
-
-# Alternative: Get VM IP and use RDP later
-lxc list win2022-choco
-```
-
-**Note:** Press any key quickly when "Press any key to boot from CD/DVD" appears.
-
----
-
-## Part 5: Windows Server Installation
-
-### 5.1 Install Windows Server
-
-1. Select language, time, keyboard → **Next**
-2. Click **Install now**
-3. Select: **Windows Server 2022 Standard (Desktop Experience)**
-4. Accept license → **Next**
-5. Select: **Custom: Install Windows only**
-6. **Load driver** → Browse to VirtIO CD → `viostor\2k22\amd64` → Select driver
-7. Select the disk → **Next**
-8. Wait for installation to complete
-
-### 5.2 Initial Windows Configuration
-
-After Windows boots:
-
-1. Set Administrator password
-2. Log in as Administrator
-
-### 5.3 Install VirtIO Guest Tools (From VirtIO ISO)
-
-```powershell
-# In Windows, open PowerShell as Administrator
-# Navigate to VirtIO CD drive (usually D: or E:)
-D:
-.\virtio-win-guest-tools.exe /S
-```
-
-### 5.4 Configure Static IP (Recommended)
-
-```powershell
-# Get adapter name
-Get-NetAdapter
-
-# Set static IP (adjust values for your network)
-New-NetIPAddress -InterfaceAlias "Ethernet" `
-    -IPAddress "10.10.10.100" `
-    -PrefixLength 24 `
-    -DefaultGateway "10.10.10.1"
-
-# Set DNS (use your internal DNS or leave empty for air-gap)
-Set-DnsClientServerAddress -InterfaceAlias "Ethernet" `
-    -ServerAddresses "10.10.10.1"
-
-# Verify
-Get-NetIPConfiguration
-```
-
-### 5.5 Rename Computer
+1. Install Windows Server 2022 (Standard, Desktop Experience)
+2. Set static IP, DNS, and join to domain
+3. Rename computer:
 
 ```powershell
 Rename-Computer -NewName "CHOCOSERVER" -Restart
 ```
 
----
+### 3.2 Create Web Server Certificate
 
-## Part 6: Map NAS Share in Windows
+1. Open `certlm.msc` (Certificate Manager - Local Machine)
+2. Create a **Web Server Authentication** certificate with an **exportable key**
+3. Place it in the **Personal** store
 
-### 6.1 Option A: Map Network Drive via SMB
+   - A template policy configuration file can be found within the choco-setup folder
+   - **The certificate must contain the machine FQDN in the Subject or the installation will error out**
+
+4. Copy the **thumbprint** for the certificate you just created:
 
 ```powershell
-# Store credentials
+# List certificates and find your new one
+Get-ChildItem Cert:\LocalMachine\My | Format-Table Subject, Thumbprint, NotAfter
+```
+
+Save the thumbprint - you will need it for the install script.
+
+### 3.3 Create Active Directory Service Accounts
+
+1. **svc.LDAP** - Create in AD with **Domain Admin** privileges
+   - Used for LDAP authentication in Nexus and CCM
+
+2. **svc.ChocoServ** - Create in AD, add to **Domain Users** and **Local Admins** groups
+   - Needs admin privileges on each machine where Chocolatey is installed
+   - Will run the Chocolatey Central Management and Chocolatey Agent services
+
+### 3.4 Configure Vault Secrets
+
+Access Vault and create a secret named **Chocolatey** at:
+`/ui/vault/secrets/systemcreds/Chocolatey`
+
+Keys to store (populated during setup):
+
+| Key | Value | When to set |
+|-----|-------|-------------|
+| `nexusadmin` | Nexus admin password | After Step 6.a |
+| `nexusadminapi` | Nexus API key | After Step 6.b |
+| `ccmadmin` | CCM admin password | After Step 7 |
+| `sqlaccess` | CCM SQL encryption password | After Step 7.c |
+| `chocosmb` | NAS SMB account password | During Step 2 |
+| `salts` | ClientCommunicationSalt, ServiceCommunicationSalt | After Step 4.b |
+
+### 3.5 Map SMB Share on Chocolatey Server
+
+Map the Buffalo NAS share persistently as the service account:
+
+```powershell
+# Store credentials for the NAS
 cmdkey /add:<NAS-IP> /user:chocosvc /pass:<PASSWORD>
 
 # Map drive persistently
-New-PSDrive -Name "Z" -PSProvider FileSystem `
-    -Root "\\<NAS-IP>\chocolatey-repo" `
-    -Persist `
-    -Credential (Get-Credential)
+net use Z: \\<NAS-IP>\ChocoShare /user:chocosvc <PASSWORD> /persistent:yes
 
-# Or via net use (simpler)
-net use Z: \\<NAS-IP>\chocolatey-repo /user:chocosvc <PASSWORD> /persistent:yes
-
-# Verify
-Get-PSDrive Z
+# Verify access
 dir Z:\
+dir Z:\nexus-repo
+dir Z:\staging
 ```
 
-### 6.2 Option B: Use LXD Passthrough (9P Filesystem)
+**Important:** The mapped drive must be accessible by the account running Nexus. If Nexus runs as `LocalSystem`, the drive mapping must exist for that account. See [Section 5](#5-configure-nexus-to-use-smb-share) for configuring this properly.
 
-If you added the disk device in LXD, it may appear as a local disk. Check:
+### 3.6 Stage Installation Files
 
 ```powershell
-# List all drives
-Get-PSDrive -PSProvider FileSystem
+# Copy choco-setup files to server
+Copy-Item -Path "<media>:\choco-setup" -Destination "C:\choco-setup" -Recurse
 
-# The NAS share may appear as a new drive letter
-# Or check Device Manager for new storage devices
+# Copy licensed package into the correct location
+Copy-Item -Path "<media>:\JJJ.Chocolatey.Licensed.nupkg" `
+    -Destination "C:\choco-setup\files\files\"
+
+# Copy latest repo packages to NAS staging area
+Copy-Item -Path "<media>:\packages\*" -Destination "Z:\staging\" -Recurse
 ```
 
-### 6.3 Create Chocolatey Directories on NAS
+### 3.7 Configure Firewall
+
+Ensure the following ports are open (apply via GPO or manually):
 
 ```powershell
-# Create directory structure
-New-Item -ItemType Directory -Path "Z:\http-packages" -Force
-New-Item -ItemType Directory -Path "Z:\logs" -Force
-New-Item -ItemType Directory -Path "Z:\backup" -Force
+# Nexus HTTPS (NuGet repository)
+New-NetFirewallRule -DisplayName "Nexus HTTPS" `
+    -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow
+
+# CCM HTTPS
+New-NetFirewallRule -DisplayName "CCM HTTPS" `
+    -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow
+
+# SMB to NAS (outbound - usually allowed by default)
+New-NetFirewallRule -DisplayName "SMB to NAS" `
+    -Direction Outbound -Protocol TCP -LocalPort 445 -Action Allow
 
 # Verify
-dir Z:\
+Get-NetFirewallRule -DisplayName "Nexus*","CCM*","SMB*" |
+    Format-Table Name, Enabled, Direction, Action
 ```
 
 ---
 
-## Part 7: Install IIS and ASP.NET
+## 4. Install Chocolatey (C4B)
 
-### 7.1 Install IIS with Required Features
-
-```powershell
-# Install IIS with ASP.NET 4.8
-Install-WindowsFeature -Name Web-Server -IncludeManagementTools
-Install-WindowsFeature -Name Web-Asp-Net45
-Install-WindowsFeature -Name Web-AppInit
-Install-WindowsFeature -Name Web-Windows-Auth
-
-# Verify installation
-Get-WindowsFeature -Name Web-* | Where-Object Installed -eq $true
-```
-
-### 7.2 Verify IIS Is Running
+### 4.1 Run C4B Setup Script
 
 ```powershell
-# Check IIS service
-Get-Service W3SVC
+# Open an elevated PowerShell window (NOT ISE!)
+# Navigate to the setup directory
+cd C:\choco-setup\files
 
-# Test default site
-Invoke-WebRequest -Uri "http://localhost" -UseBasicParsing
-```
-
----
-
-## Part 8: Install Chocolatey (Offline/Air-Gapped)
-
-### 8.1 Prepare Offline Installation
-
-```powershell
-# Create local Chocolatey directory
-New-Item -ItemType Directory -Path "C:\choco-install" -Force
-
-# Copy installation files from NAS staging
-Copy-Item "Z:\staging\install.ps1" "C:\choco-install\"
-Copy-Item "Z:\staging\chocolatey.nupkg" "C:\choco-install\"
-```
-
-### 8.2 Install Chocolatey Offline
-
-```powershell
-# Set execution policy
+# Set execution policy for this session
 Set-ExecutionPolicy Bypass -Scope Process -Force
 
-# Set environment variable for offline install
-$env:chocolateyDownloadUrl = "C:\choco-install\chocolatey.nupkg"
+# Run the C4B setup script
+# Replace <THUMBPRINT> with the certificate thumbprint from Step 3.2
+& .\Start-C4bSetup.ps1 -Thumbprint <THUMBPRINT> -Unattend -Verbose
+```
 
-# Run installer
-& C:\choco-install\install.ps1
+### 4.2 Capture Output and Salt Values
 
+The setup script produces two important files in `C:\choco-setup\files\scripts`:
+- `Register-Endpoint.ps1`
+- `ClientSetup.ps1`
+
+**Copy the salt values:**
+
+1. Open `Register-Endpoint.ps1` and copy the values for:
+   - **FQDN**
+   - **ClientCommunicationSalt**
+   - **ServiceCommunicationSalt**
+
+2. Paste these values into the existing `Register-C4bEndpoint.ps1` script at:
+   `C:\choco-setup\files\scripts\JJJUtilityScripts\Register-C4bEndpoint.ps1`
+
+3. Store the salt passwords in Vault under the `salts` key
+
+> **Note:** The salt passwords can also be found in the ReadMe file produced by the script.
+
+### 4.3 Verify Chocolatey Installation
+
+```powershell
 # Refresh environment
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
-# Verify installation
-choco --version
-```
-
-### 8.3 Configure Chocolatey for Air-Gapped Environment
-
-```powershell
-# Disable default public source
-choco source remove --name="chocolatey"
-
-# Disable telemetry/phone home features
-choco feature disable --name="usePackageExitCodes"
-choco config set --name="commandExecutionTimeoutSeconds" --value="14400"
-
-# Verify sources (should be empty or only local)
-choco source list
-```
-
----
-
-## Part 9: Install Chocolatey.Server
-
-### 9.1 Install from Offline Package
-
-```powershell
-# Install Chocolatey.Server from local nupkg
-choco install chocolatey.server -y --source="Z:\staging" --ignore-dependencies
-
-# If dependencies are missing, install them first from your staged packages
-# choco install <dependency> -y --source="Z:\staging"
-```
-
-### 9.2 Alternative: Manual Installation
-
-If the choco install fails, extract and configure manually:
-
-```powershell
-# Create web application directory
-New-Item -ItemType Directory -Path "C:\tools\chocolatey.server" -Force
-
-# Extract nupkg (it's a zip file)
-Expand-Archive -Path "Z:\staging\chocolatey.server.nupkg" -DestinationPath "C:\tools\chocolatey.server" -Force
-
-# The web app content is in the tools folder
-Move-Item "C:\tools\chocolatey.server\tools\*" "C:\tools\chocolatey.server\" -Force
-```
-
----
-
-## Part 10: Configure Chocolatey.Server
-
-### 10.1 Configure Package Path to NAS
-
-```powershell
-# Edit web.config
-$webConfig = "C:\tools\chocolatey.server\web.config"
-
-# Backup original
-Copy-Item $webConfig "$webConfig.backup"
-
-# Load and modify
-[xml]$config = Get-Content $webConfig
-
-# Find and update packagesPath setting
-$appSettings = $config.configuration.appSettings
-$packagePath = $appSettings.add | Where-Object { $_.key -eq "packagesPath" }
-
-if ($packagePath) {
-    $packagePath.value = "Z:\http-packages"
-} else {
-    $newSetting = $config.CreateElement("add")
-    $newSetting.SetAttribute("key", "packagesPath")
-    $newSetting.SetAttribute("value", "Z:\http-packages")
-    $appSettings.AppendChild($newSetting)
-}
-
-# Save
-$config.Save($webConfig)
-```
-
-### 10.2 Generate and Set API Key
-
-```powershell
-# Generate a GUID for API key
-$apiKey = [guid]::NewGuid().ToString()
-Write-Host "Your API Key: $apiKey"
-Write-Host "SAVE THIS KEY - you will need it for clients"
-
-# Add to web.config
-[xml]$config = Get-Content $webConfig
-
-$apiKeySetting = $config.configuration.appSettings.add | Where-Object { $_.key -eq "apiKey" }
-if ($apiKeySetting) {
-    $apiKeySetting.value = $apiKey
-} else {
-    $newSetting = $config.CreateElement("add")
-    $newSetting.SetAttribute("key", "apiKey")
-    $newSetting.SetAttribute("value", $apiKey)
-    $config.configuration.appSettings.AppendChild($newSetting)
-}
-
-$config.Save($webConfig)
-
-# Save API key to NAS for reference
-$apiKey | Out-File "Z:\backup\api-key.txt"
-```
-
-### 10.3 Full web.config appSettings Reference
-
-Your `appSettings` section should look like this:
-
-```xml
-<appSettings>
-    <!-- Package storage location on NAS -->
-    <add key="packagesPath" value="Z:\http-packages" />
-    
-    <!-- API key for pushing packages -->
-    <add key="apiKey" value="YOUR-GUID-API-KEY-HERE" />
-    
-    <!-- Allow package overwrites (set to true if needed) -->
-    <add key="allowOverrideExistingPackageOnPush" value="false" />
-    
-    <!-- Cache duration in seconds -->
-    <add key="cacheExpirationInSeconds" value="30" />
-</appSettings>
-```
-
----
-
-## Part 11: Configure IIS Site
-
-### 11.1 Create Application Pool
-
-```powershell
-Import-Module WebAdministration
-
-# Create application pool
-New-WebAppPool -Name "ChocolateyServer"
-
-# Configure pool
-Set-ItemProperty "IIS:\AppPools\ChocolateyServer" -Name "managedRuntimeVersion" -Value "v4.0"
-Set-ItemProperty "IIS:\AppPools\ChocolateyServer" -Name "managedPipelineMode" -Value "Integrated"
-Set-ItemProperty "IIS:\AppPools\ChocolateyServer" -Name "startMode" -Value "AlwaysRunning"
-
-# Set identity (use LocalSystem to access network shares)
-Set-ItemProperty "IIS:\AppPools\ChocolateyServer" -Name "processModel.identityType" -Value "LocalSystem"
-```
-
-### 11.2 Create Website
-
-```powershell
-# Remove default site (optional)
-Remove-Website -Name "Default Web Site"
-
-# Create Chocolatey website
-New-Website -Name "ChocolateyServer" `
-    -PhysicalPath "C:\tools\chocolatey.server" `
-    -ApplicationPool "ChocolateyServer" `
-    -Port 80 `
-    -Force
-
-# Start the site
-Start-Website -Name "ChocolateyServer"
-```
-
-### 11.3 Set Permissions
-
-```powershell
-# Grant IIS access to web directory
-$acl = Get-Acl "C:\tools\chocolatey.server"
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "IIS_IUSRS", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
-$acl.SetAccessRule($rule)
-Set-Acl "C:\tools\chocolatey.server" $acl
-
-# Grant full control to App_Data
-$appData = "C:\tools\chocolatey.server\App_Data"
-if (!(Test-Path $appData)) { New-Item -ItemType Directory -Path $appData }
-$acl = Get-Acl $appData
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "IIS_IUSRS", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-$acl.SetAccessRule($rule)
-Set-Acl $appData $acl
-```
-
-### 11.4 Verify IIS Configuration
-
-```powershell
-# List sites
-Get-Website
-
-# Check application pool status
-Get-WebAppPoolState -Name "ChocolateyServer"
-
-# Check site status
-Get-WebsiteState -Name "ChocolateyServer"
-```
-
----
-
-## Part 12: Configure Windows Firewall
-
-```powershell
-# Allow HTTP (port 80)
-New-NetFirewallRule -DisplayName "Chocolatey Server HTTP" `
-    -Direction Inbound `
-    -Protocol TCP `
-    -LocalPort 80 `
-    -Action Allow
-
-# Allow HTTPS (port 443) - for future use
-New-NetFirewallRule -DisplayName "Chocolatey Server HTTPS" `
-    -Direction Inbound `
-    -Protocol TCP `
-    -LocalPort 443 `
-    -Action Allow
-
-# Verify rules
-Get-NetFirewallRule -DisplayName "Chocolatey*" | Format-Table Name, Enabled, Direction, Action
-```
-
----
-
-## Part 13: Test the Server
-
-### 13.1 Test Locally
-
-```powershell
-# Test the feed endpoint
-Invoke-WebRequest -Uri "http://localhost/nuget/Packages" -UseBasicParsing
-
-# Expected: XML response with empty feed (no packages yet)
-```
-
-### 13.2 Test from LXD Host
-
-```bash
-# Get Windows VM IP
-lxc list win2022-choco
-
-# Test from Ubuntu host
-curl -v http://<VM-IP>/nuget/Packages
-```
-
-### 13.3 Test Package Push
-
-```powershell
-# Get server IP
-$serverIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -eq "Ethernet" }).IPAddress
-$apiKey = Get-Content "Z:\backup\api-key.txt"
-
-# Push a test package
-choco push Z:\staging\packages\some-package.nupkg `
-    --source="http://$serverIP/chocolatey" `
-    --api-key="$apiKey"
-
-# Verify package is in NAS storage
-dir Z:\http-packages
-```
-
----
-
-## Part 14: Client Configuration
-
-### 14.1 Configure Client Machines (Air-Gapped)
-
-On each Windows client that needs to use the Chocolatey server:
-
-```powershell
-# Variables - update these
-$serverIP = "10.10.10.100"  # Your Chocolatey server IP
-$apiKey = "your-api-key-here"  # From Z:\backup\api-key.txt
-
-# Remove default source (air-gapped, won't work anyway)
-choco source remove --name="chocolatey"
-
-# Add internal server
-choco source add --name="internal" `
-    --source="http://$serverIP/chocolatey" `
-    --priority=1
-
-# Save API key for pushing (optional - only for package maintainers)
-choco apikey add --source="http://$serverIP/chocolatey" --key="$apiKey"
-
 # Verify
+choco --version
+
+# Should show no public sources
 choco source list
 ```
 
-### 14.2 Test Client Access
+---
+
+## 5. Configure Nexus to Use SMB Share
+
+This is the key section that redirects Nexus package storage from local disk to the Buffalo NAS SMB share.
+
+### 5.1 Ensure SMB Access for the Nexus Service Account
+
+The Nexus service needs to access the mapped SMB share. By default, C4B installs Nexus as a Windows service. You need to configure the service to run under an account that can access the share.
+
+**Option A: Run Nexus service as svc.ChocoServ (Recommended)**
 
 ```powershell
+# Stop the Nexus service
+Stop-Service nexus
+
+# Change the service logon account
+$cred = Get-Credential -UserName "DOMAIN\svc.ChocoServ" -Message "Enter svc.ChocoServ password"
+$service = Get-WmiObject Win32_Service -Filter "Name='nexus'"
+$service.Change($null, $null, $null, $null, $null, $null, $cred.UserName, $cred.GetNetworkCredential().Password)
+
+# Grant svc.ChocoServ full control of the Nexus data directory
+$nexusData = "C:\ProgramData\sonatype-work\nexus3"
+icacls $nexusData /grant "DOMAIN\svc.ChocoServ:(OI)(CI)F" /T
+
+# Map the SMB share for svc.ChocoServ
+# Log in as svc.ChocoServ or use PsExec to run as that account:
+# Note: Persistent mapped drives are per-user. For a service, use UNC paths
+# or map the drive in a startup script.
+```
+
+**Option B: Use UNC path directly (Simpler, no drive mapping needed)**
+
+Instead of mapping `Z:\`, configure Nexus blob store with a UNC path:
+`\\<NAS-IP>\ChocoShare\nexus-repo`
+
+This avoids reliance on mapped drive letters, which can be unreliable for services.
+
+### 5.2 Create a Nexus Blob Store on the SMB Share
+
+1. Open Nexus in a browser: `https://<ChocoServerFQDN>:8443/`
+2. Log in as admin (see [Section 6.a](#6-nexus-setup) for credentials)
+3. Navigate to: **Server Administration** (gear icon) > **Blob Stores**
+4. Click **Create Blob Store**
+   - **Type:** File
+   - **Name:** `smb-packages`
+   - **Path:** `\\<NAS-IP>\ChocoShare\nexus-repo`
+     (or `Z:\nexus-repo` if using a mapped drive with proper service account)
+5. Click **Create**
+
+### 5.3 Update Repositories to Use SMB Blob Store
+
+For each hosted repository that should store packages on the NAS:
+
+1. Go to **Server Administration** > **Repositories**
+2. Select the repository (e.g., `choco-install`, `ChocolateyInternal`)
+3. Under **Storage**, change **Blob Store** to `smb-packages`
+4. Click **Save**
+
+> **Note:** Existing packages in the old blob store will NOT be automatically migrated. You will need to re-upload them or manually move the blob data. It is easier to do this before importing packages.
+
+### 5.4 Verify SMB Blob Store is Working
+
+```powershell
+# Check that Nexus created its blob structure on the NAS
+dir \\<NAS-IP>\ChocoShare\nexus-repo
+
+# You should see Nexus blob store metadata files/directories
+# After pushing a package, .nupkg data will be stored here
+```
+
+---
+
+## 6. Nexus Setup
+
+After the C4B setup script finishes, you will be presented with a webpage for Nexus and CCM credentials.
+
+### 6.a Sign In to Nexus
+
+1. Open a browser to `https://<ChocoServerFQDN>:8443/`
+2. Click **Sign In** with default credentials:
+
+   ```
+   Username: admin
+   Password: <found at C:\ProgramData\sonatype-work\nexus3\admin.password>
+   ```
+
+3. Set a new admin password. **Store the new password in Vault** under key `nexusadmin`.
+
+### 6.b Copy NuGet API Key
+
+1. Click **admin** (top right) > **NuGet API Key** > **Access API Key**
+2. Copy the API key
+3. **Upload to Vault** under key `nexusadminapi`
+
+### 6.c Enable Anonymous Access
+
+1. Go to **Server Administration** (gear icon) > **Anonymous Access**
+2. Ensure anonymous access is **enabled**
+
+### 6.d Upload Utility Scripts to Nexus
+
+1. Go to the Nexus main page, click the **Upload** tab
+2. Select the **choco-install** repository
+3. Upload:
+   - `ChocolateyInstall.ps1` from `C:\choco-setup\files\scripts`
+   - `ClientSetup.ps1` from `C:\choco-setup\files\scripts\JJJUtilityScripts`
+
+### 6.e Configure LDAP Authentication
+
+1. Go to **Server Administration** > **Security** > **LDAP**
+2. Configure LDAP connection:
+   - **Name:** AD LDAP
+   - **Protocol:** LDAPS (or LDAP)
+   - **Hostname:** `<Domain Controller FQDN>`
+   - **Port:** 636 (LDAPS) or 389 (LDAP)
+   - **Search Base:** Your domain's base DN (e.g., `DC=domain,DC=local`)
+   - **Authentication:** Simple Authentication
+   - **Username:** `svc.LDAP@domain.local`
+   - **Password:** svc.LDAP password
+3. Configure user/group mapping per your AD structure
+4. **Verify Connection** before saving
+
+### 6.f Configure LDAP Role
+
+1. Go to **Security** > **Roles**
+2. Create an LDAP role named **Domain Admins**
+3. Connect it to the AD **Domain Admins** group
+4. Assign the **NX Admin** privilege to this role
+
+### 6.g Configure Anonymous User Role
+
+1. Go to **Security** > **Users**
+2. Select the **anonymous** user
+3. Assign the **JJJ-anonymous** role
+4. Remove all other roles
+5. Save
+
+---
+
+## 7. Chocolatey Central Management (CCM) Setup
+
+### 7.a Sign In to CCM
+
+1. Open a browser to `https://<ChocoServerFQDN>:8443/` (CCM port)
+2. Log in with default credentials:
+
+   ```
+   Username: ccmadmin
+   Password: 123qwe
+   ```
+
+3. Set a new admin password. **Store in Vault** under key `ccmadmin`.
+
+### 7.b SQL Encryption
+
+On the Security page, set a strong encryption password for SQL Server computer record management.
+
+**Store in Vault** under key `sqlaccess`.
+
+### 7.c Enable LDAP Authentication in CCM
+
+1. Click **Administration** > **User Management**
+2. Enable **LDAP Authentication**
+3. Enter:
+   - **Domain name:** `<Domain FQDN>` (e.g., `domain.local`)
+   - **User name:** svc.LDAP account from Step 3.3
+
+4. Click **Update LDAP Password** and enter the svc.LDAP password
+
+> **Note:** For admins to use LDAP authentication, the `mail` attribute must be configured in Active Directory for each admin account. The address does not need to be valid, but it must be unique per user.
+
+### 7.d Configure CCM Settings
+
+| Section | Setting | Value |
+|---------|---------|-------|
+| Dashboard | Notified of Computers not reporting in | 5 |
+| Security | Maximum number of failed login | 3 |
+| Security | Account locking duration | 0 |
+| Security | Disable concurrent login for a user | Checked |
+| Retention Policies | Enable Audit Retention | Checked |
+| Retention Policies | Days to keep audit logs | 31 |
+
+Click **Save All**.
+
+### 7.e Configure Service Accounts for CCM and Agent
+
+1. Open `services.msc` on the Chocolatey Server
+2. Find **Chocolatey Central Management** service
+3. Change **Log On** to `svc.ChocoServ`
+4. Find **Chocolatey Agent** service
+5. Change **Log On** to `svc.ChocoServ`
+6. Restart both services
+
+---
+
+## 8. Import Packages to Repository
+
+### 8.1 Configure the Import Script
+
+1. Open `Import-ChocoPackages.ps1` (located in choco-setup or JJJUtilityScripts)
+2. Set the `$APIKey` variable to the API key copied in Step 6.b
+3. Verify all file paths within the script are correct
+4. Save and exit
+
+### 8.2 Run the Import
+
+```powershell
+# Run from an elevated PowerShell on the Chocolatey Server only
+# (to preserve security around the API key)
+& .\Import-ChocoPackages.ps1
+```
+
+### 8.3 Verify Package Upload
+
+```powershell
+# Search for all packages
+choco search -a
+
+# Or verify via Nexus web UI: browse the repository
+
+# Verify packages are stored on the NAS
+dir \\<NAS-IP>\ChocoShare\nexus-repo
+```
+
+> **Note:** Only run package imports from the Chocolatey/Nexus server to preserve security around the API key.
+
+---
+
+## 9. Client Setup
+
+### 9.1 Manual Client Registration
+
+On each client machine, execute:
+
+```powershell
+C:\choco-setup\files\JJJUtilityScripts\Register-C4BEndpoints.ps1 `
+    -fqdn <ChocoServerFQDN> `
+    -RepositoryCredential (Get-Credential) `
+    -AgentCredential (Get-Credential -UserName "svc.ChocoServ@$($env:USERDNSDOMAIN)")
+```
+
+### 9.2 Ansible Mass Deployment (Recommended)
+
+An Ansible playbook is included for mass deployments. It uses Vault to pass credentials for the Chocolatey agents and Nexus repositories.
+
+**Prerequisites:**
+
+1. Ensure credentials are stored in Vault at:
+   `/ui/vault/secrets/systemcreds/Chocolatey`
+
+2. Copy the following files to the Ansible server:
+   - `win-choco-install.yml`
+   - `Register-C4BEndpoints.ps1`
+
+3. Place the registration script at:
+   `/etc/ansible/playbooks/windows/psScripts/Register-C4bEndpoint.ps1`
+
+4. Run the playbook:
+
+```bash
+ansible-playbook win-choco-install.yml -i <inventory>
+```
+
+### 9.3 Verify Client Registration
+
+On the client machine:
+
+```powershell
+# Verify sources
+choco source list
+
 # Search for packages
-choco search * --source="internal"
+choco search * --source="<internal-source-name>"
 
-# Install a package
-choco install <package-name> --source="internal" -y
+# Install a test package
+choco install <package-name> -y
 ```
+
+In CCM, verify the client appears under **Computers**.
 
 ---
 
-## Part 15: Maintenance Commands
+## 10. Auditing Chocolatey
 
-### 15.1 Service Management
+These commands supplement standard auditing practices. Chocolatey does not circumvent event logs for traditional packages (.exe, .msi, etc.). However, Chocolatey-specific actions (e.g., `choco config`, `choco sources`) can only be viewed from the local Chocolatey log. CCM does not collect these logs.
+
+| Requirement | Command | Scope |
+|-------------|---------|-------|
+| Software Installation History | `choco list -lo --audit` | Client Machine |
+| Configuration Changes | `Get-Content C:\ProgramData\chocolatey\logs\chocolatey.log -Tail 100 -Wait` | Client Machine |
+| CCM Computer Reports | CCM Web UI > Computers | Server (CCM) |
+| Nexus Repository Activity | Nexus Web UI > System > Tasks/Logs | Server (Nexus) |
+| NAS Storage Usage | `Get-ChildItem \\<NAS-IP>\ChocoShare\nexus-repo -Recurse | Measure-Object -Property Length -Sum` | Any machine with share access |
+
+---
+
+## 11. Maintenance
+
+### 11.1 Service Management
 
 ```powershell
-# Restart IIS
-iisreset
+# Restart Nexus
+Restart-Service nexus
 
-# Restart just the app pool
-Restart-WebAppPool -Name "ChocolateyServer"
+# Restart CCM
+Restart-Service chocolatey-central-management
 
-# Check IIS logs
-Get-Content "C:\inetpub\logs\LogFiles\W3SVC1\*.log" -Tail 50
+# Restart Chocolatey Agent
+Restart-Service chocolatey-agent
+
+# Check all Chocolatey-related services
+Get-Service nexus, chocolatey-central-management, chocolatey-agent |
+    Format-Table Name, Status, StartType
 ```
 
-### 15.2 Package Management
+### 11.2 Package Management
 
 ```powershell
-# List packages on server (via NAS)
-Get-ChildItem "Z:\http-packages" -Filter "*.nupkg"
+# List packages stored on NAS (blob store level)
+Get-ChildItem "\\<NAS-IP>\ChocoShare\nexus-repo" -Recurse -Filter "*.nupkg" |
+    Select-Object Name, Length, LastWriteTime
 
-# Delete a package
-Remove-Item "Z:\http-packages\package-name.1.0.0.nupkg"
+# Push a new package
+choco push <package>.nupkg `
+    --source="https://<ChocoServerFQDN>:8443/repository/ChocolateyInternal/" `
+    --api-key="<API-KEY>"
 
-# After adding/removing packages, may need to clear cache
-iisreset
+# Verify via choco search
+choco search -a
 ```
 
-### 15.3 Backup Configuration
+### 11.3 Backup
 
 ```powershell
-# Backup web.config
-Copy-Item "C:\tools\chocolatey.server\web.config" "Z:\backup\web.config.$(Get-Date -Format 'yyyyMMdd')"
+# Backup Nexus configuration
+$backupDate = Get-Date -Format 'yyyyMMdd'
 
-# Backup IIS configuration
-& "$env:windir\system32\inetsrv\appcmd.exe" add backup "ChocolateyBackup-$(Get-Date -Format 'yyyyMMdd')"
+# Nexus config directory
+Copy-Item "C:\ProgramData\sonatype-work\nexus3\etc" `
+    "\\<NAS-IP>\ChocoShare\backup\nexus-etc-$backupDate" -Recurse
+
+# Chocolatey configuration
+Copy-Item "C:\ProgramData\chocolatey\config" `
+    "\\<NAS-IP>\ChocoShare\backup\choco-config-$backupDate" -Recurse
+
+# C4B setup scripts (preserve salt values and configs)
+Copy-Item "C:\choco-setup" `
+    "\\<NAS-IP>\ChocoShare\backup\choco-setup-$backupDate" -Recurse
+
+# CCM database backup (SQL Express)
+# Use SQL Server Management Studio or:
+sqlcmd -S localhost\YOURINSTANCE -Q "BACKUP DATABASE ChocolateyManagement TO DISK='\\<NAS-IP>\ChocoShare\backup\ccm-db-$backupDate.bak'"
 ```
 
-### 15.4 Monitor Disk Space
+### 11.4 Monitor Storage
 
 ```powershell
-# Check NAS space
-Get-PSDrive Z | Select-Object Used, Free
+# Check NAS share space
+Get-ChildItem "\\<NAS-IP>\ChocoShare" -Recurse |
+    Measure-Object -Property Length -Sum |
+    Select-Object @{N='TotalSizeMB';E={[math]::Round($_.Sum/1MB,2)}}
 
-# Check local space
+# Check local disk
 Get-PSDrive C | Select-Object Used, Free
+
+# Check mapped drive (if using Z:)
+Get-PSDrive Z | Select-Object Used, Free
 ```
 
----
-
-## Part 16: LXD VM Management Commands
-
-Run these on the Ubuntu LXD host:
-
-### 16.1 VM Lifecycle
-
-```bash
-# Start VM
-lxc start win2022-choco
-
-# Stop VM (graceful)
-lxc stop win2022-choco
-
-# Force stop
-lxc stop win2022-choco --force
-
-# Restart
-lxc restart win2022-choco
-
-# Check status
-lxc list win2022-choco
-lxc info win2022-choco
-```
-
-### 16.2 Console Access
-
-```bash
-# VGA console (graphical)
-lxc console win2022-choco --type=vga
-
-# Exit console: Ctrl+A then Q
-```
-
-### 16.3 Snapshots and Backups
-
-```bash
-# Create snapshot
-lxc snapshot win2022-choco pre-update
-
-# List snapshots
-lxc info win2022-choco
-
-# Restore snapshot
-lxc restore win2022-choco pre-update
-
-# Delete snapshot
-lxc delete win2022-choco/pre-update
-
-# Full export (backup)
-lxc export win2022-choco /mnt/nas/chocolatey-repo/backup/win2022-choco-$(date +%Y%m%d).tar.gz
-```
-
-### 16.4 Resource Adjustment
-
-```bash
-# Change memory (requires restart)
-lxc config set win2022-choco limits.memory 16GB
-
-# Change CPU
-lxc config set win2022-choco limits.cpu 8
-
-# View current config
-lxc config show win2022-choco
-```
-
----
-
-## Troubleshooting
-
-### Issue: NAS Share Not Accessible from Windows
+### 11.5 SMB Share Health Check
 
 ```powershell
-# Test connectivity
+# Verify SMB connectivity to NAS
+Test-NetConnection -ComputerName <NAS-IP> -Port 445
+
+# Verify share is accessible
+Test-Path "\\<NAS-IP>\ChocoShare\nexus-repo"
+
+# Check stored credentials
+cmdkey /list | Select-String "<NAS-IP>"
+
+# Re-map drive if lost after reboot
+net use Z: \\<NAS-IP>\ChocoShare /user:chocosvc <PASSWORD> /persistent:yes
+```
+
+---
+
+## 12. Troubleshooting
+
+### Issue: SMB Share Not Accessible from Chocolatey Server
+
+```powershell
+# Test basic connectivity
 Test-NetConnection -ComputerName <NAS-IP> -Port 445
 
 # Check stored credentials
@@ -909,94 +710,161 @@ cmdkey /list
 cmdkey /delete:<NAS-IP>
 cmdkey /add:<NAS-IP> /user:chocosvc /pass:<PASSWORD>
 
-# Remap drive
+# Re-map drive
 net use Z: /delete
-net use Z: \\<NAS-IP>\chocolatey-repo /user:chocosvc <PASSWORD> /persistent:yes
+net use Z: \\<NAS-IP>\ChocoShare /user:chocosvc <PASSWORD> /persistent:yes
+
+# Test write access
+New-Item -ItemType File -Path "\\<NAS-IP>\ChocoShare\nexus-repo\test.txt"
+Remove-Item "\\<NAS-IP>\ChocoShare\nexus-repo\test.txt"
 ```
 
-### Issue: IIS Returns 500 Error
+### Issue: Nexus Cannot Write to SMB Blob Store
 
 ```powershell
-# Check application pool
-Get-WebAppPoolState -Name "ChocolateyServer"
+# Check which account the Nexus service runs as
+Get-WmiObject Win32_Service -Filter "Name='nexus'" |
+    Select-Object Name, StartName, State
 
-# Check Event Viewer
-Get-EventLog -LogName Application -Newest 20 -Source "ASP.NET*"
+# If running as LocalSystem, mapped drives won't work - use UNC paths instead
 
-# Enable detailed errors (temporarily)
-# In web.config, set: <customErrors mode="Off" />
+# Verify the service account has write access to the share
+# Run as the Nexus service account:
+runas /user:DOMAIN\svc.ChocoServ "cmd /c dir \\<NAS-IP>\ChocoShare\nexus-repo"
+
+# Check Nexus logs for blob store errors
+Get-Content "C:\ProgramData\sonatype-work\nexus3\log\nexus.log" -Tail 100
+```
+
+### Issue: Nexus Returns 500 Error
+
+```powershell
+# Check Nexus service status
+Get-Service nexus
+
+# Review Nexus logs
+Get-Content "C:\ProgramData\sonatype-work\nexus3\log\nexus.log" -Tail 50
+
+# Check Windows Event Viewer
+Get-EventLog -LogName Application -Newest 20 -Source "*nexus*","*sonatype*"
+
+# Restart Nexus
+Restart-Service nexus
 ```
 
 ### Issue: Package Push Fails
 
 ```powershell
 # Verify API key
-Get-Content "Z:\backup\api-key.txt"
+# Compare with what's stored in Vault under nexusadminapi
 
-# Check write permissions on NAS
-New-Item -ItemType File -Path "Z:\http-packages\test.txt"
-Remove-Item "Z:\http-packages\test.txt"
+# Test Nexus endpoint directly
+Invoke-WebRequest -Uri "https://<ChocoServerFQDN>:8443/service/rest/v1/status" `
+    -UseBasicParsing -SkipCertificateCheck
 
-# Check IIS identity
-(Get-ItemProperty "IIS:\AppPools\ChocolateyServer").processModel.identityType
+# Check write permissions on NAS for the Nexus service account
+Test-Path "\\<NAS-IP>\ChocoShare\nexus-repo"
+
+# Check Nexus blob store status in web UI:
+# Server Administration > Blob Stores > smb-packages
+# Verify it shows "Started" state
 ```
 
-### Issue: VM Cannot Reach Network
+### Issue: CCM Not Showing Clients
 
-```bash
-# On LXD host, check network
-lxc network list
-lxc network show lxdbr0
+```powershell
+# On the client, check agent service
+Get-Service chocolatey-agent
 
-# Check VM network config
-lxc config device show win2022-choco
+# Check agent log
+Get-Content "C:\ProgramData\chocolatey\logs\chocolatey-agent.log" -Tail 50
 
-# Restart VM networking
-lxc restart win2022-choco
+# Verify client can reach CCM
+Test-NetConnection -ComputerName <ChocoServerFQDN> -Port 24020
+
+# Verify salt values match between server and client
+# Compare values in Register-C4bEndpoint.ps1 with server config
 ```
+
+### Issue: Mapped Drive Lost After Reboot
+
+Services running under `LocalSystem` cannot access per-user mapped drives. Use one of these approaches:
+
+**Option A: Use UNC paths (Recommended)**
+Configure Nexus blob store with `\\<NAS-IP>\ChocoShare\nexus-repo` instead of `Z:\nexus-repo`.
+
+**Option B: Startup script to re-map drive**
+```powershell
+# Create a scheduled task to map the drive at system startup
+$action = New-ScheduledTaskAction -Execute "net.exe" `
+    -Argument "use Z: \\<NAS-IP>\ChocoShare /user:chocosvc <PASSWORD> /persistent:yes"
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount
+Register-ScheduledTask -TaskName "Map Choco NAS Drive" `
+    -Action $action -Trigger $trigger -Principal $principal
+```
+
+**Option C: Run Nexus under a domain service account**
+Change the Nexus service logon to `svc.ChocoServ` and log in as that account to create the persistent mapping (see [Section 5.1](#51-ensure-smb-access-for-the-nexus-service-account)).
 
 ---
 
-## Quick Reference Card
+## 13. Quick Reference
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    QUICK REFERENCE                              │
+│                    QUICK REFERENCE                               │
 ├─────────────────────────────────────────────────────────────────┤
-│ Server IP:        _____________________                         │
-│ Server URL:       http://<IP>/chocolatey                        │
-│ API Key:          _____________________                         │
+│ Server FQDN:      _____________________                         │
+│ Nexus URL:        https://<FQDN>:8443/                          │
+│ CCM URL:          https://<FQDN>:8443/ (CCM)                    │
+│ API Key:          (see Vault: nexusadminapi)                     │
 │ NAS IP:           _____________________                         │
-│ NAS Share:        \\<NAS-IP>\chocolatey-repo                    │
+│ NAS Share:        \\<NAS-IP>\ChocoShare                          │
+│ Blob Store Path:  \\<NAS-IP>\ChocoShare\nexus-repo               │
 ├─────────────────────────────────────────────────────────────────┤
-│ LXD Commands (Ubuntu Host):                                     │
-│   lxc start win2022-choco                                       │
-│   lxc stop win2022-choco                                        │
-│   lxc console win2022-choco --type=vga                          │
-│   lxc list                                                      │
+│ Service Accounts:                                                │
+│   svc.LDAP         - LDAP auth for Nexus and CCM                │
+│   svc.ChocoServ    - Nexus, CCM, Agent services                 │
+│   chocosvc         - NAS SMB access (if separate from above)    │
 ├─────────────────────────────────────────────────────────────────┤
-│ IIS Commands (Windows):                                         │
-│   iisreset                                                      │
-│   Restart-WebAppPool -Name "ChocolateyServer"                   │
-│   Get-Website                                                   │
+│ Vault Path:  /ui/vault/secrets/systemcreds/Chocolatey            │
+│   nexusadmin       - Nexus admin password                        │
+│   nexusadminapi    - Nexus NuGet API key                         │
+│   ccmadmin         - CCM admin password                          │
+│   sqlaccess        - CCM SQL encryption password                 │
+│   salts            - Communication salt values                   │
+│   chocosmb         - NAS SMB password                            │
 ├─────────────────────────────────────────────────────────────────┤
-│ Client Setup:                                                   │
-│   choco source add --name="internal" `                          │
-│     --source="http://<IP>/chocolatey"                           │
-│   choco apikey add --source="http://<IP>/chocolatey" `          │
-│     --key="<API-KEY>"                                           │
+│ Key Services (Windows):                                          │
+│   Restart-Service nexus                                          │
+│   Restart-Service chocolatey-central-management                  │
+│   Restart-Service chocolatey-agent                               │
 ├─────────────────────────────────────────────────────────────────┤
-│ Test Commands:                                                  │
-│   curl http://<IP>/nuget/Packages                               │
-│   choco search * --source="internal"                            │
-│   choco push package.nupkg --source="internal"                  │
+│ Client Deployment:                                               │
+│   Manual:   Register-C4BEndpoints.ps1 -fqdn <FQDN>              │
+│   Ansible:  ansible-playbook win-choco-install.yml               │
+│   Script:   /etc/ansible/playbooks/windows/psScripts/            │
+│             Register-C4bEndpoint.ps1                             │
+├─────────────────────────────────────────────────────────────────┤
+│ Test Commands:                                                   │
+│   choco search -a                                                │
+│   choco push pkg.nupkg --source="https://<FQDN>:8443/..." `     │
+│     --api-key="<KEY>"                                            │
+│   Test-NetConnection <NAS-IP> -Port 445                          │
+│   Test-Path "\\<NAS-IP>\ChocoShare\nexus-repo"                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Document Version
+## Document Info
 
-- Version: 1.0
-- Last Updated: February 2025
-- Environment: Air-Gapped / Offline Deployment
+| | |
+|---|---|
+| Version | 2.0 |
+| Last Updated | February 2026 |
+| Environment | Air-Gapped / Offline Deployment |
+| Stack | Chocolatey for Business (C4B), Nexus, CCM |
+| Storage | Buffalo NAS via SMB |
+| Based On | ChocoDeployment.md (infrastructure), Choco-Deploy-JJJ.md (operational procedures) |
