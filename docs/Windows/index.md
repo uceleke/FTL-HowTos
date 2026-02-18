@@ -8,3 +8,4 @@ Windows-focused how-tos and runbooks.
 - [Exchange](Exchange/index.md)
 - [WSUS](WSUS/index.md)
 - [Chocolatey](Chocolatey/index.md)
+- [Imaging](Imaging/index.md)
