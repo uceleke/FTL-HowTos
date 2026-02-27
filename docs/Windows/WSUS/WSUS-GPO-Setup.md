@@ -651,7 +651,7 @@ Get-HotFix | Sort-Object -Property InstalledOn -Descending | Select-Object -Firs
 | Configure Automatic Updates | Enabled (4) | Enabled (4) | Enabled (4) | Enabled (4) |
 | Scheduled install day | Every Wednesday (4) | Every Tuesday (3) | Every Thursday (5) | Every Thursday (5) |
 | Scheduled install time | 02:00 | 01:00 | 01:00 | 01:00 |
-| Specify intranet WSUS location | `http://wsus:8530` | `http://wsus:8530` | `http://wsus:8530` | `http://wsus:8530` |
+| Specify intranet WSUS location | `https://wsus:8531` | `https://wsus:8531` | `https://wsus:8531` | `https://wsus:8531` |
 | Enable client-side targeting | Workstations | Servers - Wave 1 | Servers - Wave 2 | Servers - Tier0 |
 | No auto-restart with logged-on users | Disabled | Disabled | Disabled | **Enabled** |
 | Always auto-restart at scheduled time | Enabled (15 min) | Enabled (15 min) | Enabled (15 min) | **Disabled** |
