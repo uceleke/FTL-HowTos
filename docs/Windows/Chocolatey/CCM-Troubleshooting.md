@@ -134,7 +134,105 @@ try {
 
 ---
 
-## Step 6: Check Windows Event Logs
+## Step 6: Fix SQL Login for IIS App Pool Identity
+
+If the SQL connectivity test fails, the most likely cause is that the SQL login for the app pool identity was never created or was removed. CCM uses Windows/integrated authentication by default — switching app pool identities does **not** automatically create SQL logins.
+
+### 6a: Find the SQL Instance Name
+
+Before running sqlcmd, confirm what instance is running:
+
+```powershell
+# Check SQL service names to identify the instance
+Get-Service | Where-Object { $_.Name -like "MSSQL*" } | Select-Object Name, DisplayName, Status
+
+# Check via registry
+Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server" -Name InstalledInstances
+```
+
+| Instance Type | sqlcmd Connection |
+|---|---|
+| Default instance (`MSSQLSERVER`) | `sqlcmd -S localhost` or `sqlcmd -S .` |
+| Named instance (e.g. `SQLEXPRESS`) | `sqlcmd -S .\SQLEXPRESS` |
+
+> **Verify you can see databases before proceeding:**
+> ```cmd
+> sqlcmd -Q "SELECT name FROM sys.databases;"
+> ```
+
+### 6b: Use the Default App Pool Identity (Recommended)
+
+The CCM installer sets up SQL permissions for `IIS APPPOOL\ChocolateyCentralManagement` by default. Reverting to this identity is the easiest fix.
+
+**Switch the app pool back to ApplicationPoolIdentity:**
+
+```powershell
+Import-Module WebAdministration
+$appPool = Get-Item "IIS:\AppPools\ChocolateyCentralManagement"
+$appPool.processModel.identityType = "ApplicationPoolIdentity"
+$appPool | Set-Item
+
+iisreset /restart
+```
+
+**Verify the SQL login exists:**
+
+```cmd
+sqlcmd -Q "SELECT name, type_desc, is_disabled FROM sys.server_principals WHERE name LIKE '%ChocolateyC%';"
+```
+
+**If the login is missing, create it:**
+
+```cmd
+sqlcmd -Q "USE [master]; CREATE LOGIN [IIS APPPOOL\ChocolateyCentralManagement] FROM WINDOWS;"
+
+sqlcmd -d ChocolateyManagement -Q "CREATE USER [IIS APPPOOL\ChocolateyCentralManagement] FOR LOGIN [IIS APPPOOL\ChocolateyCentralManagement]; ALTER ROLE [db_owner] ADD MEMBER [IIS APPPOOL\ChocolateyCentralManagement];"
+```
+
+> The square brackets around `IIS APPPOOL\ChocolateyCentralManagement` are required due to the space in the name.
+
+**Verify the login and role assignment:**
+
+```cmd
+sqlcmd -d ChocolateyManagement -Q "SELECT dp.name, rp.name AS role FROM sys.database_principals dp JOIN sys.database_role_members drm ON dp.principal_id = drm.member_principal_id JOIN sys.database_principals rp ON drm.role_principal_id = rp.principal_id WHERE dp.name LIKE '%Chocolatey%';"
+```
+
+### 6c: Using a Domain Service Account Instead (Optional)
+
+If you prefer to run the app pool under a domain service account rather than the virtual app pool identity:
+
+**1. Update the app pool identity:**
+
+```powershell
+Import-Module WebAdministration
+$appPool = Get-Item "IIS:\AppPools\ChocolateyCentralManagement"
+$appPool.processModel.identityType = "SpecificUser"
+$appPool.processModel.userName = "DOMAIN\svc.account"
+$appPool.processModel.password = "YourPasswordHere"
+$appPool | Set-Item
+```
+
+**2. Create the SQL login for the service account:**
+
+```cmd
+sqlcmd -Q "USE [master]; CREATE LOGIN [DOMAIN\svc.account] FROM WINDOWS;"
+
+sqlcmd -d ChocolateyManagement -Q "CREATE USER [DOMAIN\svc.account] FOR LOGIN [DOMAIN\svc.account]; ALTER ROLE [db_owner] ADD MEMBER [DOMAIN\svc.account];"
+```
+
+**3. Restart IIS and verify:**
+
+```cmd
+iisreset /restart
+```
+
+```cmd
+sqlcmd -d ChocolateyManagement -Q "SELECT dp.name, rp.name AS role FROM sys.database_principals dp JOIN sys.database_role_members drm ON dp.principal_id = drm.member_principal_id JOIN sys.database_principals rp ON drm.role_principal_id = rp.principal_id WHERE dp.name LIKE '%svc%';"
+```
+
+---
+
+## Step 7: Check Windows Event Logs
 
 IIS and .NET errors that don't make it into app logs often surface in the Windows Event Log.
 
@@ -156,7 +254,7 @@ Filter by **Error** and **Warning** around the time you accessed the CCM site.
 
 ---
 
-## Step 7: Known Version-Specific Issues
+## Step 8: Known Version-Specific Issues
 
 ### CCM v0.6.0 and v0.6.1 — In-Process Hosting Bug
 
@@ -188,7 +286,7 @@ Mixed versions are unsupported and will cause unpredictable errors.
 
 ---
 
-## Step 8: Restart All CCM Components
+## Step 9: Restart All CCM Components
 
 After making any changes, do a clean restart of all CCM components:
 
