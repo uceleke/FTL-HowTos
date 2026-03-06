@@ -439,6 +439,86 @@ choco upgrade chocolatey-agent -y --source="'<YOUR_INTERNAL_REPO>'"
 
 ---
 
+## register-c4bendpoint.ps1 — 'AdditionalFeatures' Parameter Error
+
+This error occurs when running the bootstrap/registration script on an endpoint where Chocolatey is not yet installed. The script is responsible for installing Chocolatey, the agent, and registering with CCM in one shot.
+
+```
+Parameter does not match 'AdditionalFeatures'
+&([scriptblock]::Create($script)) @params
+```
+
+This is almost always a version mismatch between the `register-c4bendpoint.ps1` script you are running and the packages currently in your Nexus repo — commonly triggered after moving the repo to a new location.
+
+---
+
+### Step 1: Inspect the Script's Parameter Block
+
+Check what parameters the script you have actually accepts:
+
+```powershell
+Get-Content "<path-to-register-c4bendpoint.ps1>" | Select-String "param" -Context 0,20
+```
+
+Then find exactly where `AdditionalFeatures` appears:
+
+```powershell
+Get-Content "<path-to-register-c4bendpoint.ps1>" | Select-String "AdditionalFeatures"
+```
+
+---
+
+### Step 2: Dump the Params Hashtable at Runtime
+
+Add this line immediately before the failing `&([scriptblock]` line to see exactly what is being passed:
+
+```powershell
+$params | Format-Table -AutoSize
+```
+
+This confirms which keys are in the hashtable and which one is causing the mismatch.
+
+---
+
+### Step 3: Check the Script Version
+
+Look for a version comment or date at the top of the script:
+
+```powershell
+Get-Content "<path-to-register-c4bendpoint.ps1>" -TotalCount 20
+```
+
+---
+
+### Step 4: Get a Fresh Copy of the Script (Most Likely Fix)
+
+The `register-c4bendpoint.ps1` script ships with `chocolatey.extension` and is version-specific to your CCM install. A stale script from before the repo move will have a mismatched parameter signature.
+
+**Option A — Download fresh from Nexus:**
+
+```
+https://chocoserver.domain.com:8443/repository/choco-install/register-c4bendpoint.ps1
+```
+
+**Option B — Generate from the CCM Web UI (guaranteed to match your CCM version):**
+
+1. Log into CCM at `https://chocoserver.domain.com:8443`
+2. Go to **Administration** → **Deploy Chocolatey Agent**
+3. Copy or download the generated script — it will have the correct parameters for your exact CCM version
+
+---
+
+### Step 5: Verify CCM Version on the Server
+
+```powershell
+choco list --local-only chocolatey-management-web
+choco list --local-only chocolatey.extension
+```
+
+The script must match the `chocolatey.extension` version. If the extension was upgraded after the repo move, any pre-existing copy of `register-c4bendpoint.ps1` is potentially stale.
+
+---
+
 ## Quick Reference: Key File & Log Paths
 
 | Item | Path |
