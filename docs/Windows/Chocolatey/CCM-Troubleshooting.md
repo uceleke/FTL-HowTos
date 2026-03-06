@@ -310,6 +310,135 @@ Get-Service chocolatey-* | Select-Object Name, Status
 
 ---
 
+## Agent Registration HTTP 500 (register-c4bendpoint.ps1)
+
+If you get a 500 error running `register-c4bendpoint.ps1` on an endpoint, this hits the CCM **service** endpoint (port 24020), not the website. The troubleshooting path is different from the IIS 500 above.
+
+### Check the CCM Service Log First
+
+Run this on the CCM server immediately after a failed registration attempt:
+
+```powershell
+Get-Content "$env:ChocolateyInstall\logs\ccm-service.log" -Tail 50
+```
+
+This will usually point directly at the cause.
+
+---
+
+### Cause 1: CCM Service Not Running
+
+```powershell
+Get-Service chocolatey-management-service
+```
+
+If stopped:
+
+```powershell
+Start-Service chocolatey-management-service
+```
+
+Retry the registration script after confirming the service is running.
+
+---
+
+### Cause 2: Certificate Thumbprint Mismatch
+
+The agent and CCM service communicate over a certificate. If the thumbprint configured on the endpoint doesn't match what CCM is bound to, registration will fail with a 500.
+
+**Check the thumbprint on the endpoint:**
+
+```powershell
+choco config get centralManagementCertificateThumbprint
+```
+
+**Check what cert CCM service is actually bound to on the server:**
+
+```cmd
+netsh http show sslcert | findstr /A 5 "4430"
+```
+
+The thumbprints must match. If not, correct it on the endpoint:
+
+```powershell
+choco config set centralManagementCertificateThumbprint "<CORRECT_THUMBPRINT>"
+```
+
+---
+
+### Cause 3: Agent Pointing at Wrong CCM URL
+
+```powershell
+choco config get centralManagementServiceUrl
+```
+
+Should resolve to:
+
+```
+https://<ccm-server-fqdn>:24020/ChocolateyManagementService
+```
+
+If wrong, correct it:
+
+```powershell
+choco config set centralManagementServiceUrl "https://chocoserver.domain.com:24020/ChocolateyManagementService"
+```
+
+---
+
+### Cause 4: Communication Salt Mismatch
+
+If your CCM install has a communication salt configured, every endpoint must have the matching value set.
+
+**Check if a salt is configured on the CCM server:**
+
+```powershell
+Get-Content "$env:ChocolateyInstall\config\chocolatey.config" | Select-String "Salt"
+```
+
+**Set the matching salt on the endpoint:**
+
+```powershell
+choco config set centralManagementClientCommunicationSaltAdditivePassword "<SALT_VALUE>"
+```
+
+---
+
+### Cause 5: Version Incompatibility
+
+The Chocolatey Agent and CCM Service must be on compatible versions. Mixed versions will cause communication failures.
+
+**Check versions:**
+
+```powershell
+# On the CCM server
+choco list --local-only chocolatey-management-service
+
+# On the endpoint
+choco list --local-only chocolatey-agent
+```
+
+Refer to the [CCM Component Compatibility Matrix](https://docs.chocolatey.org/en-us/central-management/#ccm-component-compatibility-matrix) to confirm your versions are compatible. If not, upgrade the agent on the endpoint:
+
+```powershell
+choco upgrade chocolatey-agent -y --source="'<YOUR_INTERNAL_REPO>'"
+```
+
+---
+
+### Agent Registration Quick Checklist
+
+| Check | Command |
+|---|---|
+| CCM service running | `Get-Service chocolatey-management-service` |
+| Service log errors | `Get-Content "$env:ChocolateyInstall\logs\ccm-service.log" -Tail 50` |
+| Agent CCM URL | `choco config get centralManagementServiceUrl` |
+| Certificate thumbprint | `choco config get centralManagementCertificateThumbprint` |
+| Agent version | `choco list --local-only chocolatey-agent` |
+| CCM service version | `choco list --local-only chocolatey-management-service` |
+
+---
+
 ## Quick Reference: Key File & Log Paths
 
 | Item | Path |
