@@ -313,6 +313,108 @@ sqlcmd -S "localhost\SQLEXPRESS" -i "C:\Scripts\SUSDB_Cleanup.sql" -o "C:\Script
 
 ---
 
+## 9. Skip Problem Updates and Resume Downloads
+
+Use these commands to clear blocked updates out of the download queue and force WSUS to continue with the rest.
+
+> **Recommended order:** Run Step 9a first, then 9d (all-in-one), then 9e to monitor progress.
+
+### 9a. Decline all superseded updates
+
+Superseded updates are the most common cause of a blocked queue. Declining them removes them from the download pipeline entirely.
+
+```powershell
+[void][reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration")
+$wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::GetUpdateServer("wsus01.domain.com", $false, 8530)
+
+$superseded = $wsus.GetUpdates() | Where-Object { $_.IsSuperseded -eq $true -and $_.IsDeclined -eq $false }
+Write-Host "Found $($superseded.Count) superseded updates to decline"
+$superseded | ForEach-Object { $_.Decline() }
+Write-Host "Done declining superseded updates"
+```
+
+### 9b. Decline failed updates
+
+```powershell
+$failedUpdates = $wsus.GetUpdates() | Where-Object {
+    $_.State -eq "Failed" -and $_.IsDeclined -eq $false
+}
+Write-Host "Found $($failedUpdates.Count) failed updates"
+$failedUpdates | ForEach-Object {
+    Write-Host "Declining: $($_.Title)"
+    $_.Decline()
+}
+```
+
+### 9c. Force re-download of approved updates still missing files
+
+```powershell
+$missingFiles = $wsus.GetUpdates() | Where-Object {
+    $_.IsApproved -eq $true -and
+    $_.IsDeclined -eq $false -and
+    $_.HasLicenseAgreement -eq $true -and
+    $_.State -ne "Failed"
+}
+
+Write-Host "Approved updates missing files: $($missingFiles.Count)"
+
+$downloader = $wsus.CreateUpdateDownloader()
+$downloader.Updates = $missingFiles
+$downloader.Priority = [Microsoft.UpdateServices.Administration.DownloadPriority]::High
+$downloader.BeginDownload($null, $null, $null)
+Write-Host "Download job submitted"
+```
+
+### 9d. All-in-one — skip failures and resume queue
+
+Combines decline of superseded/failed updates, clears stuck BITS jobs, and resets WSUS in one pass.
+
+```powershell
+[void][reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration")
+$wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::GetUpdateServer("wsus01.domain.com", $false, 8530)
+
+$declined = 0
+
+$wsus.GetUpdates() | ForEach-Object {
+    $update = $_
+
+    # Skip already declined
+    if ($update.IsDeclined) { return }
+
+    # Decline superseded and failed — these block the queue
+    if ($update.IsSuperseded -or $update.State -eq "Failed") {
+        $update.Decline()
+        $declined++
+    }
+}
+
+Write-Host "Declined $declined problem updates"
+
+# Clear stuck BITS jobs
+Get-BitsTransfer -AllUsers | Where-Object { $_.JobState -eq "Transient Error" } | Remove-BitsTransfer
+Write-Host "Cleared stuck BITS jobs"
+
+# Reset WSUS to re-evaluate and re-queue downloads
+& "C:\Program Files\Update Services\Tools\WsusUtil.exe" reset
+Write-Host "WSUS reset triggered — downloads will resume"
+```
+
+### 9e. Monitor download progress
+
+```powershell
+while ($true) {
+    $status = $wsus.GetStatus()
+    Write-Host "$(Get-Date -Format 'HH:mm:ss') -- Needed: $($status.UpdatesNeedingFilesCount) | Downloaded: $($status.DownloadedUpdateCount)"
+
+    $bits = Get-BitsTransfer -AllUsers | Group-Object JobState
+    $bits | Select-Object Name, Count | Format-Table -AutoSize
+
+    Start-Sleep 60
+}
+```
+
+---
+
 ## Most Likely Culprits
 
 | Issue | Indicator | Fix |
@@ -324,6 +426,7 @@ sqlcmd -S "localhost\SQLEXPRESS" -i "C:\Scripts\SUSDB_Cleanup.sql" -o "C:\Script
 | **Corrupt update metadata** | Specific updates always fail | Decline → re-approve affected updates |
 | **SSL/TLS cert issue** | IIS 403/500 on `/selfupdate` | Verify WSUS SSL cert binding in IIS |
 | **DB bloat / fragmentation** | Slow syncs, high SQL CPU | Run SUSDB cleanup script (Section 8) |
+| **Superseded updates blocking queue** | Large undeclined superseded update count | Run Section 9a to bulk decline |
 
 ---
 
@@ -333,7 +436,8 @@ sqlcmd -S "localhost\SQLEXPRESS" -i "C:\Scripts\SUSDB_Cleanup.sql" -o "C:\Script
 - [x] Set `PrivateMemory` to `0` in WsusPool advanced settings
 - [x] Increased queue length from `1000` → `25000`
 - [x] Cleared 10 transient BITS errors
+- [x] Declined superseded and failed updates; reset download queue
 
 ---
 
-*Last updated: 2026-03-09*
+*Last updated: 2026-03-10*
