@@ -1,5 +1,5 @@
 # Note Templates
 
-## Runbooks
+## Templates
 - [How to Template](Template-Notes.md)
 
