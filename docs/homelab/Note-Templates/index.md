@@ -1,5 +1,5 @@
 # Note Templates
 
 ## Runbooks
-- [How to Template](Temp-Homelab-Notes.md)
+- [How to Template](Template-Notes.md)
 
