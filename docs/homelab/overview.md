@@ -1,6 +1,6 @@
 # Homelab
 
 Quick links:
-- [Note Templates](Note Templates/index.md)
+- [Note Templates](Note-Templates/index.md)
 - 
 
