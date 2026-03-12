@@ -1,4 +1,6 @@
 # Homelab
 
 Quick links:
-- Coming soon…
+- [Note Templates](Note Templates/index.md)
+- 
+
