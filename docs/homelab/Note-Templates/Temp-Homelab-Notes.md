@@ -1,279 +1,116 @@
 ---
-title: "<Guide Title>"
-author: "<Your Name>"
-date_created: YYYY-MM-DD
-last_updated: YYYY-MM-DD
+title: ""
+date: YYYY-MM-DD
+updated: YYYY-MM-DD
 version: 1.0
 status: Draft | Active | Deprecated
-homelab_environment: <e.g., Proxmox | ESXi | Docker | Kubernetes | Mixed>
-services: [<service1>, <service2>]
-tags: [homelab, howto, runbook]
+type: Deployment | Runbook | Reference | Troubleshooting
+tags: []
 ---
 
-# 🏠 <Guide Title>
+# <Title>
 
-## 📌 Overview
+## Overview
 
-Describe what this guide accomplishes in your homelab.
+What this guide does, why it exists, and any important scope boundaries.
 
-- Purpose of the setup
-- Problem it solves
-- Scope of the guide
-- Whether it is internet-facing or internal-only
+> ⚠️ **Impact / Risk:** _(Optional — note if this affects production, shared services, or requires a change window)_
 
 ---
 
-## 🎯 Goals
+## Environment
 
-After completing this guide, you will have:
-
-- Goal 1
-- Goal 2
-- Goal 3
-
----
-
-## 🧱 Homelab Environment
-
-### Hardware
-
-| Component | Details |
-|----------|---------|
-| Server | <Model / Build> |
-| CPU | |
-| RAM | |
-| Storage | |
-| Network | |
-
-### Virtualization / Platform
-
-- Hypervisor: <Proxmox / ESXi / Hyper‑V / Bare Metal>
-- VM or Container: <VM / Docker / LXC / K8s>
-- Hostname: <hostname>
-- IP Address: <IP>
-- VLAN / Network: <optional>
+| Item | Value |
+|------|-------|
+| Host / System | |
+| OS / Platform | |
+| IP / Network | |
+| Related Services | |
 
 ---
 
-## ⚠️ Prerequisites
+## Prerequisites
 
-### Knowledge
-
-- Basic Linux/Windows administration
-- Networking fundamentals
-- Familiarity with your hypervisor
-
-### Access
-
-- SSH / RDP access
-- Admin or root privileges
-- Console access (recommended)
-
-### Dependencies
-
-- Required services already running
-- DNS configured (if needed)
-- Storage available
+- **Access:** What credentials or permissions are needed
+- **Dependencies:** Services, certs, DNS, or configs that must exist first
+- **Tools:** Any CLI tools, scripts, or software required
 
 ---
 
-## 🧰 Required Inputs
+## Procedure
 
-| Item | Description | Example |
-|------|-------------|----------|
-| Hostname | Server name | media01 |
-| Static IP | IP address | 192.168.1.50 |
-| Domain | Local domain | home.lab |
-| Storage Path | Data location | /mnt/storage |
+### Step 1 — <Name>
 
----
-
-## 📦 Expected Outcome
-
-When completed:
-
-- Service is installed and running
-- Accessible via web UI / SSH / API
-- Persistent storage configured
-- Survives reboot
-
----
-
-## 🚀 Deployment Procedure
-
-### Step 1 — Provision System
-
-Describe how to create the VM/container or prepare hardware.
-
-1. Create a new VM/container
-2. Assign CPU, RAM, and disk
-3. Configure networking
-4. Install operating system
-
----
-
-### Step 2 — Install Dependencies
-
-Install required packages.
-
-#### 🧪 Example Code Block (Linux)
+What this step accomplishes and why.
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl wget git
+# Commands
 ```
 
-#### 🧪 Example Code Block (PowerShell)
-
-```powershell
-# Install Chocolatey and Git on Windows
-Set-ExecutionPolicy Bypass -Scope Process -Force
-iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-choco install git -y
-```
+> 💡 **Note:** Non-obvious gotchas or things to watch for.
 
 ---
 
-### Step 3 — Install Application / Service
+### Step 2 — <Name>
 
-Provide installation steps specific to the software.
+_(Repeat block as needed)_
+
+---
+
+## Verification
+
+Confirm the outcome is as expected before considering this complete.
 
 ```bash
-# Example: Pull Docker image
-docker pull nginx:latest
-
-# Run container
-docker run -d   --name nginx   -p 80:80   nginx
+# Health check commands
 ```
 
----
-
-### Step 4 — Configure Service
-
-Explain configuration steps.
-
-- Edit config files
-- Set environment variables
-- Configure storage paths
-- Configure authentication
+- [ ] Service running / responding
+- [ ] Logs clean — no critical errors
+- [ ] Tested end-to-end
 
 ---
 
-## ✅ Verification
+## Troubleshooting
 
-Confirm everything works.
+### Issue: <Symptom>
 
-### Health Checks
+**Likely cause:** Brief explanation.
 
-- [ ] Service is running
-- [ ] Port is listening
-- [ ] Web UI loads
-- [ ] Logs show no critical errors
-
-### Verification Commands
+**Resolution:**
 
 ```bash
-docker ps
-systemctl status <service-name>
+# Fix
 ```
 
----
-
-## 🌐 Access Information
-
-| Method | Address |
-|--------|----------|
-| Web UI | http://<IP>:<PORT> |
-| SSH | ssh user@<IP> |
-| API | http://<IP>:<PORT>/api |
+_(Add more issue blocks as needed)_
 
 ---
 
-## 🔒 Security Considerations
+## Rollback
 
-- Change default passwords
-- Restrict exposure to WAN
-- Use firewall rules
-- Enable HTTPS if applicable
-- Consider VPN-only access
+Steps to safely undo this change if something goes wrong.
 
----
-
-## 💾 Backup & Persistence
-
-Describe how data is protected.
-
-- Backup location
-- Snapshot strategy
-- Export procedures
-- Restore steps
+1. 
+2. 
+3. 
 
 ---
 
-## 🔄 Update / Maintenance
+## Lessons Learned
 
-How to safely update the service.
-
-```bash
-docker pull <image>
-docker stop <container>
-docker rm <container>
-# Redeploy with new image
-```
+> Observations, edge cases, tuning notes, and things to watch for next time. Written for future reference.
 
 ---
 
-## 🛠️ Troubleshooting
+## References
 
-### Common Issue: Service Not Starting
-
-**Symptoms**
-
-- Container exits
-- Service inactive
-- Port not open
-
-**Checks**
-
-```bash
-docker logs <container>
-journalctl -u <service>
-```
-
-**Resolution**
-
-- Verify configuration
-- Check permissions
-- Confirm dependencies
+- [Description](URL)
 
 ---
 
-## 🔁 Rollback Procedure
+## Change Log
 
-If deployment fails:
-
-1. Restore VM snapshot
-2. Restore configuration backups
-3. Revert to previous container/image version
-
----
-
-## 📚 References
-
-- Official documentation
-- GitHub repositories
-- Community guides
-
----
-
-## 📝 Change Log
-
-| Version | Date | Author | Description |
-|---------|------|--------|-------------|
-| 1.0 | YYYY-MM-DD | <Name> | Initial homelab template |
-
----
-
-## 🧠 Notes
-
-Use this section for personal observations, tuning tips, or future improvements.
+| Version | Date | Author | Summary |
+|---------|------|--------|---------|
+| 1.0 | YYYY-MM-DD | | Initial draft |
