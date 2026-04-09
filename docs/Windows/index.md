@@ -12,3 +12,4 @@ Windows-focused how-tos and runbooks.
 - [Imaging](Imaging/index.md)
 - [Hyper-V](Hyper-V/index.md)
 - [MSSQL](MSSQL/index.md)
+- [WDS](WDS/index.md)
