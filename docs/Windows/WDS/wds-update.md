@@ -195,6 +195,159 @@ After deployment completes, confirm in Device Manager that no devices show yello
 
 ---
 
+## 6. Inject VirtIO Drivers into WinPE (KVM/QEMU)
+
+When deploying Windows to KVM/QEMU VMs via WDS, WinPE needs VirtIO storage and network drivers loaded early — otherwise the disk won't be visible and network connectivity won't be available during deployment. These drivers must be injected directly into the WinPE `.wim` files using DISM offline servicing.
+
+### 6a. Prerequisites
+
+- Download the latest **VirtIO Win ISO** from the Fedora project:
+  `https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso`
+- Mount or extract the ISO — key driver paths inside are:
+  ```
+  virtio-win.iso\
+    viostor\w10\amd64\     ← VirtIO SCSI storage (disk visibility in WinPE)
+    NetKVM\w10\amd64\      ← VirtIO network adapter
+    vioscsi\w10\amd64\     ← VirtIO SCSI passthrough (if used)
+    qxldod\w10\amd64\      ← QXL display (optional, not needed in WinPE)
+    Balloon\w10\amd64\     ← Memory balloon (optional, not needed in WinPE)
+  ```
+
+> **Airgapped note:** Download the ISO on an internet-connected machine and transfer via USB or internal share. No internet access is required for the injection steps below.
+
+### 6b. Inject into Standalone WDS boot.wim
+
+The WDS boot image is typically located at:
+```
+C:\RemoteInstall\Boot\x64\Images\boot.wim
+```
+
+```powershell
+# Create mount directory
+New-Item -ItemType Directory -Path "C:\Mount\WinPE" -Force
+
+# Mount the boot image (index 2 = Boot with WinPE tools; index 1 = Setup)
+dism /Mount-Image /ImageFile:"C:\RemoteInstall\Boot\x64\Images\boot.wim" `
+     /Index:2 /MountDir:"C:\Mount\WinPE"
+
+# Inject VirtIO storage driver (required for disk visibility)
+dism /Image:"C:\Mount\WinPE" /Add-Driver `
+     /Driver:"D:\viostor\w10\amd64" /Recurse
+
+# Inject VirtIO network driver (required for network during WinPE)
+dism /Image:"C:\Mount\WinPE" /Add-Driver `
+     /Driver:"D:\NetKVM\w10\amd64" /Recurse
+
+# Optionally inject VirtIO SCSI
+dism /Image:"C:\Mount\WinPE" /Add-Driver `
+     /Driver:"D:\vioscsi\w10\amd64" /Recurse
+
+# Verify drivers were added
+dism /Image:"C:\Mount\WinPE" /Get-Drivers | Select-String "vio"
+
+# Commit and unmount
+dism /Unmount-Image /MountDir:"C:\Mount\WinPE" /Commit
+```
+
+> **Index note:** WDS `boot.wim` typically has two indices. Index 1 is the minimal WinPE used during setup; Index 2 is the full boot environment. Inject into both if unsure:
+> ```powershell
+> dism /Get-ImageInfo /ImageFile:"C:\RemoteInstall\Boot\x64\Images\boot.wim"
+> ```
+
+### 6c. Inject into MDT LiteTouchPE
+
+MDT regenerates `LiteTouchPE_x64.wim` every time you run **Update Deployment Share** — so drivers injected directly into the `.wim` will be overwritten. Instead, add VirtIO drivers to MDT's **Extra Files** or **Selection Profiles** so they are baked in automatically on each regeneration.
+
+#### Method 1 — Extra Directory (Recommended)
+
+Copy VirtIO drivers into the deployment share's `ExtraFiles` folder structure so MDT includes them in every WinPE build:
+
+```powershell
+# Create driver staging path under ExtraFiles
+$extraPath = "\\<MDTShare>\DeploymentShare$\ExtraFiles\Windows\System32\drivers"
+New-Item -ItemType Directory -Path $extraPath -Force
+
+# Copy VirtIO driver files (.sys and .inf) into ExtraFiles
+Copy-Item "D:\viostor\w10\amd64\*" -Destination $extraPath
+Copy-Item "D:\NetKVM\w10\amd64\*" -Destination $extraPath
+```
+
+Then update the deployment share to regenerate LiteTouchPE with the extra files included:
+
+```powershell
+Update-MDTDeploymentShare -Path "DS001:" -Force -Verbose
+```
+
+#### Method 2 — Inject Directly into LiteTouchPE_x64.wim (Before Update)
+
+If you need immediate injection without regenerating the full deployment share:
+
+```powershell
+New-Item -ItemType Directory -Path "C:\Mount\LiteTouchPE" -Force
+
+dism /Mount-Image /ImageFile:"\\<MDTShare>\DeploymentShare$\Boot\LiteTouchPE_x64.wim" `
+     /Index:1 /MountDir:"C:\Mount\LiteTouchPE"
+
+dism /Image:"C:\Mount\LiteTouchPE" /Add-Driver `
+     /Driver:"D:\viostor\w10\amd64" /Recurse
+
+dism /Image:"C:\Mount\LiteTouchPE" /Add-Driver `
+     /Driver:"D:\NetKVM\w10\amd64" /Recurse
+
+dism /Unmount-Image /MountDir:"C:\Mount\LiteTouchPE" /Commit
+```
+
+> **Warning:** This change will be overwritten next time you run `Update-MDTDeploymentShare`. Use Method 1 for a persistent solution.
+
+### 6d. Re-import Updated Boot Image into WDS
+
+After modifying either boot image, re-import it into WDS:
+
+**For standalone boot.wim** — WDS uses it in-place from `C:\RemoteInstall\Boot\x64\Images\`, so no re-import is needed after committing the DISM changes. Restart the WDS service to ensure the updated image is served:
+
+```powershell
+Restart-Service WDSServer
+```
+
+**For MDT LiteTouchPE** — re-import into WDS after regenerating:
+
+1. Open **Windows Deployment Services** console
+2. Right-click **Boot Images** → **Replace Image**
+3. Browse to `\\<MDTShare>\DeploymentShare$\Boot\LiteTouchPE_x64.wim`
+4. Follow the wizard to replace the existing boot image
+
+Or via PowerShell:
+
+```powershell
+# Remove old boot image
+Remove-WdsBootImage -Architecture x64 -ImageName "LiteTouchPE_x64"
+
+# Import updated image
+Import-WdsBootImage -Path "\\<MDTShare>\DeploymentShare$\Boot\LiteTouchPE_x64.wim" `
+    -NewImageName "LiteTouchPE_x64" -SkipVerify
+```
+
+### 6e. Validate
+
+1. PXE boot a KVM/QEMU VM — confirm WinPE boots without hanging at disk/network detection
+2. In WinPE command prompt, verify drivers loaded:
+   ```cmd
+   drvload X:\Windows\System32\drivers\viostor.sys
+   wpeutil waitfornetwork
+   ```
+3. Confirm the virtual disk is visible in `diskpart`:
+   ```cmd
+   diskpart
+   list disk
+   ```
+4. Confirm network is available:
+   ```cmd
+   ipconfig
+   ping <MDT server IP>
+   ```
+
+---
+
 ## Notes
 
 - **Driver-only updates:** If the change is limited to driver additions (no OS changes), consider offline servicing with DISM instead of a full recapture:
