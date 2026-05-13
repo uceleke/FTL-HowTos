@@ -21,6 +21,8 @@ plugins:
 
 nav:
   - Home: index.md
+  - Blog: 
+      - Overview: sec-blog/index.md
   - Windows:
       - Overview: Windows/index.md
       - Active Directory: Windows/Active-Directory/index.md
