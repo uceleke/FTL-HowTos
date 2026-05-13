@@ -8,7 +8,7 @@
 
 ## Introduction
 
-Before hardening a Windows system, you need to understand its current security posture. A security baseline gives you a measurable starting point by identifying configuration gaps, policy weaknesses, and areas of risk — before you start making changes. Rather than guessing whether a system is secure, administrators can use standardized benchmarks and automated scanning tools to compare the current configuration against known security requirements.
+Before hardening any information system, you need to understand its current security posture. A security baseline gives you a measurable starting point by identifying configuration gaps, policy weaknesses, and areas of risk before you start making changes to harden your system /environment. Rather than guess if a system is secure, administrators can use standardized benchmarks and automated scanning tools to compare the current configuration against known security requirements.
 
 One of the most common methods for doing this is through the **Security Content Automation Protocol**, better known as **SCAP**. SCAP is a standardized framework for checking system configurations against published security benchmarks in a machine-readable, repeatable way. In enterprise and government environments, SCAP is typically paired with **DISA Security Technical Implementation Guides (STIGs)** to evaluate whether systems are configured in accordance with approved hardening guidance.
 
